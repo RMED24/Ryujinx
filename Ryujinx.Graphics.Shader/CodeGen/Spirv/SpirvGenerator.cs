@@ -50,22 +50,30 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             CodeGenContext context = new CodeGenContext(info, config, instPool, integerPool);
 
             context.AddCapability(Capability.GroupNonUniformBallot);
+            context.AddCapability(Capability.GroupNonUniformShuffle);
+            context.AddCapability(Capability.GroupNonUniformVote);
             context.AddCapability(Capability.ImageBuffer);
             context.AddCapability(Capability.ImageGatherExtended);
             context.AddCapability(Capability.ImageQuery);
             context.AddCapability(Capability.SampledBuffer);
-            context.AddCapability(Capability.SubgroupBallotKHR);
-            context.AddCapability(Capability.SubgroupVoteKHR);
 
             if (config.TransformFeedbackEnabled && config.LastInVertexPipeline)
             {
                 context.AddCapability(Capability.TransformFeedback);
             }
 
-            if (config.Stage == ShaderStage.Fragment && context.Config.GpuAccessor.QueryHostSupportsFragmentShaderInterlock())
+            if (config.Stage == ShaderStage.Fragment)
             {
-                context.AddCapability(Capability.FragmentShaderPixelInterlockEXT);
-                context.AddExtension("SPV_EXT_fragment_shader_interlock");
+                if (context.Info.Inputs.Contains(AttributeConsts.Layer))
+                {
+                    context.AddCapability(Capability.Geometry);
+                }
+
+                if (context.Config.GpuAccessor.QueryHostSupportsFragmentShaderInterlock())
+                {
+                    context.AddCapability(Capability.FragmentShaderPixelInterlockEXT);
+                    context.AddExtension("SPV_EXT_fragment_shader_interlock");
+                }
             }
             else if (config.Stage == ShaderStage.Geometry)
             {
@@ -81,9 +89,10 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             {
                 context.AddCapability(Capability.Tessellation);
             }
-
-            context.AddExtension("SPV_KHR_shader_ballot");
-            context.AddExtension("SPV_KHR_subgroup_vote");
+            else if (config.Stage == ShaderStage.Vertex)
+            {
+                context.AddCapability(Capability.DrawParameters);
+            }
 
             Declarations.DeclareAll(context, info);
 

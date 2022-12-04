@@ -3,6 +3,8 @@ using Ryujinx.Graphics.Shader;
 using Silk.NET.Vulkan;
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Ryujinx.Graphics.Vulkan
 {
@@ -47,7 +49,6 @@ namespace Ryujinx.Graphics.Vulkan
         private Auto<DisposableFramebuffer> _framebuffer;
         private Auto<DisposableRenderPass> _renderPass;
         private int _writtenAttachmentCount;
-        private bool _renderPassActive;
 
         private readonly DescriptorSetUpdater _descriptorSetUpdater;
 
@@ -71,6 +72,7 @@ namespace Ryujinx.Graphics.Vulkan
         private PipelineColorBlendAttachmentState[] _storedBlend;
 
         public ulong DrawCount { get; private set; }
+        public bool RenderPassActive { get; private set; }
 
         public unsafe PipelineBase(VulkanRenderer gd, Device device)
         {
@@ -112,6 +114,8 @@ namespace Ryujinx.Graphics.Vulkan
 
         public void Initialize()
         {
+            _descriptorSetUpdater.Initialize();
+
             SupportBufferUpdater = new SupportBufferUpdater(Gd);
             SupportBufferUpdater.UpdateRenderScale(_renderScale, 0, SupportBuffer.RenderScaleMaxCount);
 
@@ -124,14 +128,14 @@ namespace Ryujinx.Graphics.Vulkan
             MemoryBarrier memoryBarrier = new MemoryBarrier()
             {
                 SType = StructureType.MemoryBarrier,
-                SrcAccessMask = AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit,
-                DstAccessMask = AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit
+                SrcAccessMask = AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit,
+                DstAccessMask = AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit
             };
 
             Gd.Api.CmdPipelineBarrier(
                 CommandBuffer,
-                PipelineStageFlags.PipelineStageFragmentShaderBit,
-                PipelineStageFlags.PipelineStageFragmentShaderBit,
+                PipelineStageFlags.FragmentShaderBit,
+                PipelineStageFlags.FragmentShaderBit,
                 0,
                 1,
                 memoryBarrier,
@@ -157,9 +161,9 @@ namespace Ryujinx.Graphics.Vulkan
                 Cbs.CommandBuffer,
                 dst,
                 BufferHolder.DefaultAccessFlags,
-                AccessFlags.AccessTransferWriteBit,
-                PipelineStageFlags.PipelineStageAllCommandsBit,
-                PipelineStageFlags.PipelineStageTransferBit,
+                AccessFlags.TransferWriteBit,
+                PipelineStageFlags.AllCommandsBit,
+                PipelineStageFlags.TransferBit,
                 offset,
                 size);
 
@@ -169,10 +173,10 @@ namespace Ryujinx.Graphics.Vulkan
                 Gd,
                 Cbs.CommandBuffer,
                 dst,
-                AccessFlags.AccessTransferWriteBit,
+                AccessFlags.TransferWriteBit,
                 BufferHolder.DefaultAccessFlags,
-                PipelineStageFlags.PipelineStageTransferBit,
-                PipelineStageFlags.PipelineStageAllCommandsBit,
+                PipelineStageFlags.TransferBit,
+                PipelineStageFlags.AllCommandsBit,
                 offset,
                 size);
         }
@@ -192,7 +196,7 @@ namespace Ryujinx.Graphics.Vulkan
             BeginRenderPass();
 
             var clearValue = new ClearValue(new ClearColorValue(color.Red, color.Green, color.Blue, color.Alpha));
-            var attachment = new ClearAttachment(ImageAspectFlags.ImageAspectColorBit, (uint)index, clearValue);
+            var attachment = new ClearAttachment(ImageAspectFlags.ColorBit, (uint)index, clearValue);
             var clearRect = FramebufferParams.GetClearRect(ClearScissor, layer, layerCount);
 
             Gd.Api.CmdClearAttachments(CommandBuffer, 1, &attachment, 1, &clearRect);
@@ -215,11 +219,11 @@ namespace Ryujinx.Graphics.Vulkan
             BeginRenderPass();
 
             var clearValue = new ClearValue(null, new ClearDepthStencilValue(depthValue, (uint)stencilValue));
-            var flags = depthMask ? ImageAspectFlags.ImageAspectDepthBit : 0;
+            var flags = depthMask ? ImageAspectFlags.DepthBit : 0;
 
             if (stencilMask != 0)
             {
-                flags |= ImageAspectFlags.ImageAspectStencilBit;
+                flags |= ImageAspectFlags.StencilBit;
             }
 
             var attachment = new ClearAttachment(flags, 0, clearValue);
@@ -234,13 +238,13 @@ namespace Ryujinx.Graphics.Vulkan
             {
                 SType = StructureType.MemoryBarrier,
                 SrcAccessMask = BufferHolder.DefaultAccessFlags,
-                DstAccessMask = AccessFlags.AccessIndirectCommandReadBit
+                DstAccessMask = AccessFlags.IndirectCommandReadBit
             };
 
             Gd.Api.CmdPipelineBarrier(
                 CommandBuffer,
-                PipelineStageFlags.PipelineStageAllCommandsBit,
-                PipelineStageFlags.PipelineStageDrawIndirectBit,
+                PipelineStageFlags.AllCommandsBit,
+                PipelineStageFlags.DrawIndirectBit,
                 0,
                 1,
                 memoryBarrier,
@@ -292,6 +296,19 @@ namespace Ryujinx.Graphics.Vulkan
             Gd.Api.CmdDispatch(CommandBuffer, (uint)groupsX, (uint)groupsY, (uint)groupsZ);
         }
 
+        public void DispatchComputeIndirect(Auto<DisposableBuffer> indirectBuffer, int indirectBufferOffset)
+        {
+            if (!_program.IsLinked)
+            {
+                return;
+            }
+
+            EndRenderPass();
+            RecreatePipelineIfNeeded(PipelineBindPoint.Compute);
+
+            Gd.Api.CmdDispatchIndirect(CommandBuffer, indirectBuffer.Get(Cbs, indirectBufferOffset, 12).Value, (ulong)indirectBufferOffset);
+        }
+
         public void Draw(int vertexCount, int instanceCount, int firstVertex, int firstInstance)
         {
             if (!_program.IsLinked)
@@ -311,7 +328,8 @@ namespace Ryujinx.Graphics.Vulkan
                 IndexBufferPattern pattern = _topology switch
                 {
                     GAL.PrimitiveTopology.Quads => QuadsToTrisPattern,
-                    GAL.PrimitiveTopology.TriangleFan => TriFanToTrisPattern,
+                    GAL.PrimitiveTopology.TriangleFan or
+                    GAL.PrimitiveTopology.Polygon => TriFanToTrisPattern,
                     _ => throw new NotSupportedException($"Unsupported topology: {_topology}")
                 };
 
@@ -342,7 +360,8 @@ namespace Ryujinx.Graphics.Vulkan
                 pattern = _topology switch
                 {
                     GAL.PrimitiveTopology.Quads => QuadsToTrisPattern,
-                    GAL.PrimitiveTopology.TriangleFan => TriFanToTrisPattern,
+                    GAL.PrimitiveTopology.TriangleFan or
+                    GAL.PrimitiveTopology.Polygon => TriFanToTrisPattern,
                     _ => throw new NotSupportedException($"Unsupported topology: {_topology}")
                 };
             }
@@ -393,6 +412,204 @@ namespace Ryujinx.Graphics.Vulkan
             }
         }
 
+        public void DrawIndexedIndirect(BufferRange indirectBuffer)
+        {
+            if (!_program.IsLinked)
+            {
+                return;
+            }
+
+            UpdateIndexBufferPattern();
+            RecreatePipelineIfNeeded(PipelineBindPoint.Graphics);
+            BeginRenderPass();
+            DrawCount++;
+
+            if (_indexBufferPattern != null)
+            {
+                // Convert the index buffer into a supported topology.
+                IndexBufferPattern pattern = _indexBufferPattern;
+
+                Auto<DisposableBuffer> indirectBufferAuto = _indexBuffer.BindConvertedIndexBufferIndirect(
+                    Gd,
+                    Cbs,
+                    indirectBuffer,
+                    BufferRange.Empty,
+                    pattern,
+                    false,
+                    1,
+                    indirectBuffer.Size);
+
+                _needsIndexBufferRebind = false;
+
+                BeginRenderPass(); // May have been interrupted to set buffer data.
+                ResumeTransformFeedbackInternal();
+
+                Gd.Api.CmdDrawIndexedIndirect(CommandBuffer, indirectBufferAuto.Get(Cbs, 0, indirectBuffer.Size).Value, 0, 1, (uint)indirectBuffer.Size);
+            }
+            else
+            {
+                var buffer = Gd.BufferManager
+                    .GetBuffer(CommandBuffer, indirectBuffer.Handle, indirectBuffer.Offset, indirectBuffer.Size, false)
+                    .Get(Cbs, indirectBuffer.Offset, indirectBuffer.Size).Value;
+
+                ResumeTransformFeedbackInternal();
+
+                Gd.Api.CmdDrawIndexedIndirect(CommandBuffer, buffer, (ulong)indirectBuffer.Offset, 1, (uint)indirectBuffer.Size);
+            }
+        }
+
+        public void DrawIndexedIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride)
+        {
+            if (!_program.IsLinked)
+            {
+                return;
+            }
+
+            UpdateIndexBufferPattern();
+            RecreatePipelineIfNeeded(PipelineBindPoint.Graphics);
+            BeginRenderPass();
+            DrawCount++;
+
+            var countBuffer = Gd.BufferManager
+                .GetBuffer(CommandBuffer, parameterBuffer.Handle, parameterBuffer.Offset, parameterBuffer.Size, false)
+                .Get(Cbs, parameterBuffer.Offset, parameterBuffer.Size).Value;
+
+            if (_indexBufferPattern != null)
+            {
+                // Convert the index buffer into a supported topology.
+                IndexBufferPattern pattern = _indexBufferPattern;
+
+                Auto<DisposableBuffer> indirectBufferAuto = _indexBuffer.BindConvertedIndexBufferIndirect(
+                    Gd,
+                    Cbs,
+                    indirectBuffer,
+                    parameterBuffer,
+                    pattern,
+                    true,
+                    maxDrawCount,
+                    stride);
+
+                _needsIndexBufferRebind = false;
+
+                BeginRenderPass(); // May have been interrupted to set buffer data.
+                ResumeTransformFeedbackInternal();
+
+                if (Gd.Capabilities.SupportsIndirectParameters)
+                {
+                    Gd.DrawIndirectCountApi.CmdDrawIndexedIndirectCount(
+                        CommandBuffer,
+                        indirectBufferAuto.Get(Cbs, 0, indirectBuffer.Size).Value,
+                        0,
+                        countBuffer,
+                        (ulong)parameterBuffer.Offset,
+                        (uint)maxDrawCount,
+                        (uint)stride);
+                }
+                else
+                {
+                    // This is also fine because the indirect data conversion always zeros
+                    // the entries that are past the current draw count.
+
+                    Gd.Api.CmdDrawIndexedIndirect(
+                        CommandBuffer,
+                        indirectBufferAuto.Get(Cbs, 0, indirectBuffer.Size).Value,
+                        0,
+                        (uint)maxDrawCount,
+                        (uint)stride);
+                }
+
+            }
+            else
+            {
+                var buffer = Gd.BufferManager
+                    .GetBuffer(CommandBuffer, indirectBuffer.Handle, indirectBuffer.Offset, indirectBuffer.Size, false)
+                    .Get(Cbs, indirectBuffer.Offset, indirectBuffer.Size).Value;
+
+                ResumeTransformFeedbackInternal();
+
+                if (Gd.Capabilities.SupportsIndirectParameters)
+                {
+                    Gd.DrawIndirectCountApi.CmdDrawIndexedIndirectCount(
+                        CommandBuffer,
+                        buffer,
+                        (ulong)indirectBuffer.Offset,
+                        countBuffer,
+                        (ulong)parameterBuffer.Offset,
+                        (uint)maxDrawCount,
+                        (uint)stride);
+                }
+                else
+                {
+                    // Not fully correct, but we can't do much better if the host does not support indirect count.
+                    Gd.Api.CmdDrawIndexedIndirect(
+                        CommandBuffer,
+                        buffer,
+                        (ulong)indirectBuffer.Offset,
+                        (uint)maxDrawCount,
+                        (uint)stride);
+                }
+            }
+        }
+
+        public void DrawIndirect(BufferRange indirectBuffer)
+        {
+            if (!_program.IsLinked)
+            {
+                return;
+            }
+
+            // TODO: Support quads and other unsupported topologies.
+
+            RecreatePipelineIfNeeded(PipelineBindPoint.Graphics);
+            BeginRenderPass();
+            ResumeTransformFeedbackInternal();
+            DrawCount++;
+
+            var buffer = Gd.BufferManager
+                .GetBuffer(CommandBuffer, indirectBuffer.Handle, indirectBuffer.Offset, indirectBuffer.Size, false)
+                .Get(Cbs, indirectBuffer.Offset, indirectBuffer.Size).Value;
+
+            Gd.Api.CmdDrawIndirect(CommandBuffer, buffer, (ulong)indirectBuffer.Offset, 1, (uint)indirectBuffer.Size);
+        }
+
+        public void DrawIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride)
+        {
+            if (!Gd.Capabilities.SupportsIndirectParameters)
+            {
+                // TODO: Fallback for when this is not supported.
+                throw new NotSupportedException();
+            }
+
+            if (!_program.IsLinked)
+            {
+                return;
+            }
+
+            // TODO: Support quads and other unsupported topologies.
+
+            RecreatePipelineIfNeeded(PipelineBindPoint.Graphics);
+            BeginRenderPass();
+            ResumeTransformFeedbackInternal();
+            DrawCount++;
+
+            var buffer = Gd.BufferManager
+                .GetBuffer(CommandBuffer, indirectBuffer.Handle, indirectBuffer.Offset, indirectBuffer.Size, false)
+                .Get(Cbs, indirectBuffer.Offset, indirectBuffer.Size).Value;
+
+            var countBuffer = Gd.BufferManager
+                .GetBuffer(CommandBuffer, parameterBuffer.Handle, parameterBuffer.Offset, parameterBuffer.Size, false)
+                .Get(Cbs, parameterBuffer.Offset, parameterBuffer.Size).Value;
+
+            Gd.DrawIndirectCountApi.CmdDrawIndirectCount(
+                CommandBuffer,
+                buffer,
+                (ulong)indirectBuffer.Offset,
+                countBuffer,
+                (ulong)parameterBuffer.Offset,
+                (uint)maxDrawCount,
+                (uint)stride);
+        }
+
         public void DrawTexture(ITexture texture, ISampler sampler, Extents2DF srcRegion, Extents2DF dstRegion)
         {
             if (texture is TextureView srcTexture)
@@ -407,7 +624,7 @@ namespace Ryujinx.Graphics.Vulkan
                 var oldViewports = DynamicState.Viewports;
                 var oldViewportsCount = _newState.ViewportsCount;
 
-                _newState.CullMode = CullModeFlags.CullModeNone;
+                _newState.CullMode = CullModeFlags.None;
                 _newState.StencilTestEnable = false;
                 _newState.DepthTestEnable = false;
                 _newState.DepthWriteEnable = false;
@@ -445,76 +662,6 @@ namespace Ryujinx.Graphics.Vulkan
         public bool IsCommandBufferActive(CommandBuffer cb)
         {
             return CommandBuffer.Handle == cb.Handle;
-        }
-
-        public void MultiDrawIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride)
-        {
-            if (!Gd.Capabilities.SupportsIndirectParameters)
-            {
-                throw new NotSupportedException();
-            }
-
-            if (_program.LinkStatus != ProgramLinkStatus.Success)
-            {
-                return;
-            }
-
-            RecreatePipelineIfNeeded(PipelineBindPoint.Graphics);
-            BeginRenderPass();
-            ResumeTransformFeedbackInternal();
-            DrawCount++;
-
-            var buffer = Gd.BufferManager
-                .GetBuffer(CommandBuffer, indirectBuffer.Handle, indirectBuffer.Offset, indirectBuffer.Size, true)
-                .Get(Cbs, indirectBuffer.Offset, indirectBuffer.Size).Value;
-
-            var countBuffer = Gd.BufferManager
-                .GetBuffer(CommandBuffer, parameterBuffer.Handle, parameterBuffer.Offset, parameterBuffer.Size, true)
-                .Get(Cbs, parameterBuffer.Offset, parameterBuffer.Size).Value;
-
-            Gd.DrawIndirectCountApi.CmdDrawIndirectCount(
-                CommandBuffer,
-                buffer,
-                (ulong)indirectBuffer.Offset,
-                countBuffer,
-                (ulong)parameterBuffer.Offset,
-                (uint)maxDrawCount,
-                (uint)stride);
-        }
-
-        public void MultiDrawIndexedIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride)
-        {
-            if (!Gd.Capabilities.SupportsIndirectParameters)
-            {
-                throw new NotSupportedException();
-            }
-
-            if (_program.LinkStatus != ProgramLinkStatus.Success)
-            {
-                return;
-            }
-
-            RecreatePipelineIfNeeded(PipelineBindPoint.Graphics);
-            BeginRenderPass();
-            ResumeTransformFeedbackInternal();
-            DrawCount++;
-
-            var buffer = Gd.BufferManager
-                .GetBuffer(CommandBuffer, indirectBuffer.Handle, parameterBuffer.Offset, parameterBuffer.Size, true)
-                .Get(Cbs, indirectBuffer.Offset, indirectBuffer.Size).Value;
-
-            var countBuffer = Gd.BufferManager
-                .GetBuffer(CommandBuffer, parameterBuffer.Handle, parameterBuffer.Offset, parameterBuffer.Size, true)
-                .Get(Cbs, parameterBuffer.Offset, parameterBuffer.Size).Value;
-
-            Gd.DrawIndirectCountApi.CmdDrawIndexedIndirectCount(
-                CommandBuffer,
-                buffer,
-                (ulong)indirectBuffer.Offset,
-                countBuffer,
-                (ulong)parameterBuffer.Offset,
-                (uint)maxDrawCount,
-                (uint)stride);
         }
 
         public void SetAlphaTest(bool enable, float reference, GAL.CompareOp op)
@@ -590,7 +737,7 @@ namespace Ryujinx.Graphics.Vulkan
 
         public void SetFaceCulling(bool enable, Face face)
         {
-            _newState.CullMode = enable ? face.Convert() : CullModeFlags.CullModeNone;
+            _newState.CullMode = enable ? face.Convert() : CullModeFlags.None;
             SignalStateChange();
         }
 
@@ -695,6 +842,23 @@ namespace Ryujinx.Graphics.Vulkan
             stages.CopyTo(_newState.Stages.AsSpan().Slice(0, stages.Length));
 
             SignalStateChange();
+
+            if (_program.IsCompute)
+            {
+                EndRenderPass();
+            }
+        }
+
+        public void Specialize<T>(in T data) where T : unmanaged
+        {
+            var dataSpan = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref Unsafe.AsRef(in data), 1));
+
+            if (!dataSpan.SequenceEqual(_newState.SpecializationData.Span))
+            {
+                _newState.SpecializationData = new SpecData(dataSpan);
+
+                SignalStateChange();
+            }
         }
 
         protected virtual void SignalAttachmentChange()
@@ -811,9 +975,9 @@ namespace Ryujinx.Graphics.Vulkan
             SignalStateChange();
         }
 
-        public void SetStorageBuffers(int first, ReadOnlySpan<BufferRange> buffers)
+        public void SetStorageBuffers(ReadOnlySpan<BufferAssignment> buffers)
         {
-            _descriptorSetUpdater.SetStorageBuffers(CommandBuffer, first, buffers);
+            _descriptorSetUpdater.SetStorageBuffers(CommandBuffer, buffers);
         }
 
         public void SetStorageBuffers(int first, ReadOnlySpan<Auto<DisposableBuffer>> buffers)
@@ -851,9 +1015,9 @@ namespace Ryujinx.Graphics.Vulkan
             }
         }
 
-        public void SetUniformBuffers(int first, ReadOnlySpan<BufferRange> buffers)
+        public void SetUniformBuffers(ReadOnlySpan<BufferAssignment> buffers)
         {
-            _descriptorSetUpdater.SetUniformBuffers(CommandBuffer, first, buffers);
+            _descriptorSetUpdater.SetUniformBuffers(CommandBuffer, buffers);
         }
 
         public void SetUserClipDistance(int index, bool enableClip)
@@ -1036,14 +1200,14 @@ namespace Ryujinx.Graphics.Vulkan
             MemoryBarrier memoryBarrier = new MemoryBarrier()
             {
                 SType = StructureType.MemoryBarrier,
-                SrcAccessMask = AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit,
-                DstAccessMask = AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit
+                SrcAccessMask = AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit,
+                DstAccessMask = AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit
             };
 
             Gd.Api.CmdPipelineBarrier(
                 CommandBuffer,
-                PipelineStageFlags.PipelineStageFragmentShaderBit,
-                PipelineStageFlags.PipelineStageFragmentShaderBit,
+                PipelineStageFlags.FragmentShaderBit,
+                PipelineStageFlags.FragmentShaderBit,
                 0,
                 1,
                 memoryBarrier,
@@ -1188,14 +1352,7 @@ namespace Ryujinx.Graphics.Vulkan
                 }
             }
 
-            var subpassDependency = new SubpassDependency(
-                0,
-                0,
-                PipelineStageFlags.PipelineStageAllGraphicsBit,
-                PipelineStageFlags.PipelineStageAllGraphicsBit,
-                AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit | AccessFlags.AccessColorAttachmentWriteBit,
-                AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit | AccessFlags.AccessShaderReadBit,
-                0);
+            var subpassDependency = PipelineConverter.CreateSubpassDependency();
 
             fixed (AttachmentDescription* pAttachmentDescs = attachmentDescs)
             {
@@ -1303,7 +1460,7 @@ namespace Ryujinx.Graphics.Vulkan
 
         private unsafe void BeginRenderPass()
         {
-            if (!_renderPassActive)
+            if (!RenderPassActive)
             {
                 var renderArea = new Rect2D(null, new Extent2D(FramebufferParams.Width, FramebufferParams.Height));
                 var clearValue = new ClearValue();
@@ -1319,18 +1476,18 @@ namespace Ryujinx.Graphics.Vulkan
                 };
 
                 Gd.Api.CmdBeginRenderPass(CommandBuffer, renderPassBeginInfo, SubpassContents.Inline);
-                _renderPassActive = true;
+                RenderPassActive = true;
             }
         }
 
         public void EndRenderPass()
         {
-            if (_renderPassActive)
+            if (RenderPassActive)
             {
                 PauseTransformFeedbackInternal();
                 Gd.Api.CmdEndRenderPass(CommandBuffer);
                 SignalRenderPassEnd();
-                _renderPassActive = false;
+                RenderPassActive = false;
             }
         }
 

@@ -34,10 +34,13 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
 
         private ProgramPipelineState _pipeline;
 
+        private bool _vsUsesDrawParameters;
         private bool _vtgWritesRtLayer;
         private byte _vsClipDistancesWritten;
+        private uint _vbEnableMask;
 
         private bool _prevDrawIndexed;
+        private bool _prevDrawIndirect;
         private IndexType _prevIndexType;
         private uint _prevFirstVertex;
         private bool _prevTfEnable;
@@ -74,6 +77,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                     nameof(ThreedClassState.VertexBufferState),
                     nameof(ThreedClassState.VertexBufferEndAddress)),
 
+                // Must be done after vertex buffer updates.
                 new StateUpdateCallbackEntry(UpdateVertexAttribState, nameof(ThreedClassState.VertexAttribState)),
 
                 new StateUpdateCallbackEntry(UpdateBlendState,
@@ -210,7 +214,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
             // of the shader for the new state.
             if (_shaderSpecState != null)
             {
-                if (!_shaderSpecState.MatchesGraphics(_channel, GetPoolState(), GetGraphicsState(), false))
+                if (!_shaderSpecState.MatchesGraphics(_channel, GetPoolState(), GetGraphicsState(), _vsUsesDrawParameters, false))
                 {
                     ForceShaderUpdate();
                 }
@@ -235,6 +239,15 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                 }
 
                 _prevDrawIndexed = _drawState.DrawIndexed;
+            }
+
+            // Some draw parameters are used to restrict the vertex buffer size,
+            // but they can't be used on indirect draws because their values are unknown in this case.
+            // When switching between indirect and non-indirect draw, we need to
+            // make sure the vertex buffer sizes are still correct.
+            if (_drawState.DrawIndirect != _prevDrawIndirect)
+            {
+                _updateTracker.ForceDirty(VertexBufferStateIndex);
             }
 
             // In some cases, the index type is also used to guess the
@@ -282,9 +295,12 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
         /// </summary>
         private void CommitBindings()
         {
+            var buffers = _channel.BufferManager;
+            var hasUnaligned = buffers.HasUnalignedStorageBuffers;
+
             UpdateStorageBuffers();
 
-            if (!_channel.TextureManager.CommitGraphicsBindings(_shaderSpecState))
+            if (!_channel.TextureManager.CommitGraphicsBindings(_shaderSpecState) || (buffers.HasUnalignedStorageBuffers != hasUnaligned))
             {
                 // Shader must be reloaded.
                 UpdateShaderState();
@@ -838,11 +854,22 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
         /// </summary>
         private void UpdateVertexAttribState()
         {
+            uint vbEnableMask = _vbEnableMask;
+
             Span<VertexAttribDescriptor> vertexAttribs = stackalloc VertexAttribDescriptor[Constants.TotalVertexAttribs];
 
             for (int index = 0; index < Constants.TotalVertexAttribs; index++)
             {
                 var vertexAttrib = _state.State.VertexAttribState[index];
+
+                int bufferIndex = vertexAttrib.UnpackBufferIndex();
+
+                if ((vbEnableMask & (1u << bufferIndex)) == 0)
+                {
+                    // Using a vertex buffer that doesn't exist is invalid, so let's use a dummy attribute for those cases.
+                    vertexAttribs[index] = new VertexAttribDescriptor(0, 0, true, Format.R32G32B32A32Float);
+                    continue;
+                }
 
                 if (!FormatTable.TryGetAttribFormat(vertexAttrib.UnpackFormat(), out Format format))
                 {
@@ -852,7 +879,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                 }
 
                 vertexAttribs[index] = new VertexAttribDescriptor(
-                    vertexAttrib.UnpackBufferIndex(),
+                    bufferIndex,
                     vertexAttrib.UnpackOffset(),
                     vertexAttrib.UnpackIsConstant(),
                     format);
@@ -938,6 +965,10 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
 
             _drawState.IsAnyVbInstanced = false;
 
+            bool drawIndexed = _drawState.DrawIndexed;
+            bool drawIndirect = _drawState.DrawIndirect;
+            uint vbEnableMask = 0;
+
             for (int index = 0; index < Constants.TotalVertexBuffers; index++)
             {
                 var vertexBuffer = _state.State.VertexBufferState[index];
@@ -954,6 +985,11 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
 
                 ulong address = vertexBuffer.Address.Pack();
 
+                if (_channel.MemoryManager.IsMapped(address))
+                {
+                    vbEnableMask |= 1u << index;
+                }
+
                 int stride = vertexBuffer.UnpackStride();
 
                 bool instanced = _state.State.VertexBufferInstanced[index];
@@ -965,14 +1001,14 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                 ulong vbSize = endAddress.Pack() - address + 1;
                 ulong size;
 
-                if (_drawState.IbStreamer.HasInlineIndexData || _drawState.DrawIndexed || stride == 0 || instanced)
+                if (_drawState.IbStreamer.HasInlineIndexData || drawIndexed || stride == 0 || instanced)
                 {
                     // This size may be (much) larger than the real vertex buffer size.
                     // Avoid calculating it this way, unless we don't have any other option.
 
                     size = vbSize;
 
-                    if (stride > 0 && indexTypeSmall && _drawState.DrawIndexed && !instanced)
+                    if (stride > 0 && indexTypeSmall && drawIndexed && !drawIndirect && !instanced)
                     {
                         // If the index type is a small integer type, then we might be still able
                         // to reduce the vertex buffer size based on the maximum possible index value.
@@ -999,6 +1035,12 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
 
                 _pipeline.VertexBuffers[index] = new BufferPipelineDescriptor(_channel.MemoryManager.IsMapped(address), stride, divisor);
                 _channel.BufferManager.SetVertexBuffer(index, address, size, stride, divisor);
+            }
+
+            if (_vbEnableMask != vbEnableMask)
+            {
+                _vbEnableMask = vbEnableMask;
+                UpdateVertexAttribState();
             }
         }
 
@@ -1207,6 +1249,7 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
             byte oldVsClipDistancesWritten = _vsClipDistancesWritten;
 
             _drawState.VsUsesInstanceId = gs.Shaders[1]?.Info.UsesInstanceId ?? false;
+            _vsUsesDrawParameters = gs.Shaders[1]?.Info.UsesDrawParameters ?? false;
             _vsClipDistancesWritten = gs.Shaders[1]?.Info.ClipDistancesWritten ?? 0;
 
             if (oldVsClipDistancesWritten != _vsClipDistancesWritten)
@@ -1222,6 +1265,11 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
             _context.Renderer.Pipeline.SetProgram(gs.HostProgram);
         }
 
+        /// <summary>
+        /// Updates bindings consumed by the shader stage on the texture and buffer managers.
+        /// </summary>
+        /// <param name="stage">Shader stage to have the bindings updated</param>
+        /// <param name="info">Shader stage bindings info</param>
         private void UpdateStageBindings(int stage, ShaderProgramInfo info)
         {
             _currentProgramInfo[stage] = info;
@@ -1340,7 +1388,9 @@ namespace Ryujinx.Graphics.Gpu.Engine.Threed
                 _state.State.AlphaTestEnable,
                 _state.State.AlphaTestFunc,
                 _state.State.AlphaTestRef,
-                ref attributeTypes);
+                ref attributeTypes,
+                _drawState.HasConstantBufferDrawParameters,
+                _channel.BufferManager.HasUnalignedStorageBuffers);
         }
 
         /// <summary>

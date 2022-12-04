@@ -117,12 +117,13 @@ namespace Ryujinx.Graphics.OpenGL
                 supportsFragmentShaderOrderingIntel: HwCapabilities.SupportsFragmentShaderOrdering,
                 supportsGeometryShaderPassthrough: HwCapabilities.SupportsGeometryShaderPassthrough,
                 supportsImageLoadFormatted: HwCapabilities.SupportsImageLoadFormatted,
+                supportsLayerVertexTessellation: HwCapabilities.SupportsShaderViewportLayerArray,
                 supportsMismatchingViewFormat: HwCapabilities.SupportsMismatchingViewFormat,
                 supportsCubemapView: true,
                 supportsNonConstantTextureOffset: HwCapabilities.SupportsNonConstantTextureOffset,
                 supportsShaderBallot: HwCapabilities.SupportsShaderBallot,
                 supportsTextureShadowLod: HwCapabilities.SupportsTextureShadowLod,
-                supportsViewportIndex: true,
+                supportsViewportIndex: HwCapabilities.SupportsShaderViewportLayerArray,
                 supportsViewportSwizzle: HwCapabilities.SupportsViewportSwizzle,
                 supportsIndirectParameters: HwCapabilities.SupportsIndirectParameters,
                 maximumUniformBuffersPerStage: 13, // TODO: Avoid hardcoding those limits here and get from driver?
@@ -235,6 +236,11 @@ namespace Ryujinx.Graphics.OpenGL
         public void WaitSync(ulong id)
         {
             _sync.Wait(id);
+        }
+
+        public ulong GetCurrentSync()
+        {
+            return _sync.GetCurrent();
         }
 
         public void Screenshot()

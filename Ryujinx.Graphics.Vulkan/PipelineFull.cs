@@ -8,7 +8,7 @@ namespace Ryujinx.Graphics.Vulkan
 {
     class PipelineFull : PipelineBase, IPipeline
     {
-        private const ulong MinByteWeightForFlush = 256 * 1024 * 1024; // MB
+        private const ulong MinByteWeightForFlush = 256 * 1024 * 1024; // MiB
 
         private readonly List<QueryPool> _activeQueries;
         private CounterQueueEvent _activeConditionalRender;
@@ -125,7 +125,7 @@ namespace Ryujinx.Graphics.Vulkan
                     if (Gd.Capabilities.SupportsConditionalRendering)
                     {
                         var buffer = evt.GetBuffer().Get(Cbs, 0, sizeof(long)).Value;
-                        var flags = isEqual ? ConditionalRenderingFlagsEXT.ConditionalRenderingInvertedBitExt : 0;
+                        var flags = isEqual ? ConditionalRenderingFlagsEXT.InvertedBitExt : 0;
 
                         var conditionalRenderingBeginInfo = new ConditionalRenderingBeginInfoEXT()
                         {
