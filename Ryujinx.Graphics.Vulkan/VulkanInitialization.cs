@@ -1,4 +1,4 @@
-﻿using Ryujinx.Common.Configuration;
+using Ryujinx.Common.Configuration;
 using Ryujinx.Common.Logging;
 using Ryujinx.Graphics.GAL;
 using Silk.NET.Vulkan;
@@ -393,6 +393,7 @@ namespace Ryujinx.Graphics.Vulkan
                 ShaderClipDistance = true,
                 ShaderFloat64 = supportedFeatures.ShaderFloat64,
                 ShaderImageGatherExtended = true,
+                ShaderStorageImageMultisample = supportedFeatures.ShaderStorageImageMultisample,
                 // ShaderStorageImageReadWithoutFormat = true,
                 // ShaderStorageImageWriteWithoutFormat = true,
                 TessellationShader = true,
@@ -443,7 +444,8 @@ namespace Ryujinx.Graphics.Vulkan
                 SType = StructureType.PhysicalDeviceVulkan12Features,
                 PNext = pExtendedFeatures,
                 DescriptorIndexing = supportedExtensions.Contains("VK_EXT_descriptor_indexing"),
-                DrawIndirectCount = supportedExtensions.Contains(KhrDrawIndirectCount.ExtensionName)
+                DrawIndirectCount = supportedExtensions.Contains(KhrDrawIndirectCount.ExtensionName),
+                UniformBufferStandardLayout = supportedExtensions.Contains("VK_KHR_uniform_buffer_standard_layout")
             };
 
             pExtendedFeatures = &featuresVk12;

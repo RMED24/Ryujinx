@@ -41,7 +41,7 @@ You can check out the compatibility list [here](https://github.com/Ryujinx/Ryuji
 
 ## Usage
 
-To run this emulator, your PC must be equipped with at least 8GB of RAM; failing to meet this requirement may result in a poor gameplay experience or unexpected crashes.
+To run this emulator, your PC must be equipped with at least 8GiB of RAM; failing to meet this requirement may result in a poor gameplay experience or unexpected crashes.
 
 See our [Setup & Configuration Guide](https://github.com/Ryujinx/Ryujinx/wiki/Ryujinx-Setup-&-Configuration-Guide) on how to set up the emulator.
 
@@ -62,7 +62,7 @@ The latest automatic build for Windows, macOS, and Linux can be found on the [Of
 If you wish to build the emulator yourself, follow these steps:
 
 ### Step 1
-Install the X64 version of [.NET 6.0 (or higher) SDK](https://dotnet.microsoft.com/download/dotnet/6.0).
+Install the X64 version of [.NET 7.0 (or higher) SDK](https://dotnet.microsoft.com/download/dotnet/7.0).
 
 ### Step 2
 Either use `git clone https://github.com/Ryujinx/Ryujinx` on the command line to clone the repository or use Code --> Download zip button to get the files.

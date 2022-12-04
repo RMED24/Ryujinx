@@ -75,7 +75,7 @@
                             Spacing="10">
                             <ListBox
                                 Name="GameList"
-                                MinHeight="150"
+                                MinHeight="250"
                                 Items="{Binding GameDirectories}" />
                             <Grid HorizontalAlignment="Stretch">
                                 <Grid.ColumnDefinitions>
@@ -567,6 +567,10 @@
                                 <CheckBox IsChecked="{Binding EnableTextureRecompression}"
                                     ToolTip.Tip="{locale:Locale SettingsEnableTextureRecompressionTooltip}">
                                     <TextBlock Text="{locale:Locale SettingsEnableTextureRecompression}" />
+                                </CheckBox>
+                                <CheckBox IsChecked="{Binding EnableMacroHLE}"
+                                    ToolTip.Tip="{locale:Locale SettingsEnableMacroHLETooltip}">
+                                    <TextBlock Text="{locale:Locale SettingsEnableMacroHLE}" />
                                 </CheckBox>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal">
