@@ -22,6 +22,8 @@ namespace Ryujinx.Graphics.Vulkan
         private Device _device;
         private WindowBase _window;
 
+        private bool _initialized;
+
         internal FormatCapabilities FormatCapabilities { get; private set; }
         internal HardwareCapabilities Capabilities;
 
@@ -266,6 +268,8 @@ namespace Ryujinx.Graphics.Vulkan
             LoadFeatures(supportedExtensions, maxQueueCount, queueFamilyIndex);
 
             _window = new Window(this, _surface, _physicalDevice, _device);
+
+            _initialized = true;
         }
 
         public BufferHandle CreateBuffer(int size)
@@ -287,9 +291,9 @@ namespace Ryujinx.Graphics.Vulkan
             }
         }
 
-        internal ShaderCollection CreateProgramWithMinimalLayout(ShaderSource[] sources)
+        internal ShaderCollection CreateProgramWithMinimalLayout(ShaderSource[] sources, SpecDescription[] specDescription = null)
         {
-            return new ShaderCollection(this, _device, sources, isMinimal: true);
+            return new ShaderCollection(this, _device, sources, specDescription: specDescription, isMinimal: true);
         }
 
         public ISampler CreateSampler(GAL.SamplerCreateInfo info)
@@ -337,11 +341,11 @@ namespace Ryujinx.Graphics.Vulkan
         public unsafe Capabilities GetCapabilities()
         {
             FormatFeatureFlags compressedFormatFeatureFlags =
-                FormatFeatureFlags.FormatFeatureSampledImageBit |
-                FormatFeatureFlags.FormatFeatureSampledImageFilterLinearBit |
-                FormatFeatureFlags.FormatFeatureBlitSrcBit |
-                FormatFeatureFlags.FormatFeatureTransferSrcBit |
-                FormatFeatureFlags.FormatFeatureTransferDstBit;
+                FormatFeatureFlags.SampledImageBit |
+                FormatFeatureFlags.SampledImageFilterLinearBit |
+                FormatFeatureFlags.BlitSrcBit |
+                FormatFeatureFlags.TransferSrcBit |
+                FormatFeatureFlags.TransferDstBit;
 
             bool supportsBc123CompressionFormat = FormatCapabilities.OptimalFormatsSupport(compressedFormatFeatureFlags,
                 GAL.Format.Bc1RgbaSrgb,
@@ -396,6 +400,7 @@ namespace Ryujinx.Graphics.Vulkan
                 supportsFragmentShaderOrderingIntel: false,
                 supportsGeometryShaderPassthrough: Capabilities.SupportsGeometryShaderPassthrough,
                 supportsImageLoadFormatted: features2.Features.ShaderStorageImageReadWithoutFormat,
+                supportsLayerVertexTessellation: featuresVk12.ShaderOutputLayer,
                 supportsMismatchingViewFormat: true,
                 supportsCubemapView: !IsAmdGcn,
                 supportsNonConstantTextureOffset: false,
@@ -403,7 +408,7 @@ namespace Ryujinx.Graphics.Vulkan
                 supportsTextureShadowLod: false,
                 supportsViewportIndex: featuresVk12.ShaderOutputViewportIndex,
                 supportsViewportSwizzle: false,
-                supportsIndirectParameters: Capabilities.SupportsIndirectParameters,
+                supportsIndirectParameters: true,
                 maximumUniformBuffersPerStage: Constants.MaxUniformBuffersPerStage,
                 maximumStorageBuffersPerStage: Constants.MaxStorageBuffersPerStage,
                 maximumTexturesPerStage: Constants.MaxTexturesPerStage,
@@ -466,7 +471,7 @@ namespace Ryujinx.Graphics.Vulkan
             GpuRenderer = Marshal.PtrToStringAnsi((IntPtr)properties.DeviceName);
             GpuVersion = $"Vulkan v{ParseStandardVulkanVersion(properties.ApiVersion)}, Driver v{ParseDriverVersion(ref properties)}";
 
-            IsAmdGcn = Vendor == Vendor.Amd && VendorUtils.AmdGcnRegex.IsMatch(GpuRenderer);
+            IsAmdGcn = Vendor == Vendor.Amd && VendorUtils.AmdGcnRegex().IsMatch(GpuRenderer);
 
             Logger.Notice.Print(LogClass.Gpu, $"{GpuVendor} {GpuRenderer} ({GpuVersion})");
         }
@@ -560,6 +565,11 @@ namespace Ryujinx.Graphics.Vulkan
             _syncManager.Wait(id);
         }
 
+        public ulong GetCurrentSync()
+        {
+            return _syncManager.GetCurrent();
+        }
+
         public void Screenshot()
         {
             _window.ScreenCaptureRequested = true;
@@ -572,6 +582,11 @@ namespace Ryujinx.Graphics.Vulkan
 
         public unsafe void Dispose()
         {
+            if (!_initialized)
+            {
+                return;
+            }
+
             CommandBufferPool.Dispose();
             BackgroundResources.Dispose();
             _counters.Dispose();

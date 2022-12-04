@@ -6,6 +6,9 @@ namespace Ryujinx.Graphics.Vulkan
 {
     static class PipelineConverter
     {
+        private const AccessFlags SubpassSrcAccessMask = AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit | AccessFlags.ColorAttachmentWriteBit;
+        private const AccessFlags SubpassDstAccessMask = AccessFlags.MemoryReadBit | AccessFlags.MemoryWriteBit | AccessFlags.ShaderReadBit;
+
         public static unsafe DisposableRenderPass ToRenderPass(this ProgramPipelineState state, VulkanRenderer gd, Device device)
         {
             const int MaxAttachments = Constants.MaxRenderTargets + 1;
@@ -100,14 +103,7 @@ namespace Ryujinx.Graphics.Vulkan
                 }
             }
 
-            var subpassDependency = new SubpassDependency(
-                0,
-                0,
-                PipelineStageFlags.PipelineStageAllGraphicsBit,
-                PipelineStageFlags.PipelineStageAllGraphicsBit,
-                AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit,
-                AccessFlags.AccessMemoryReadBit | AccessFlags.AccessMemoryWriteBit,
-                0);
+            var subpassDependency = CreateSubpassDependency();
 
             fixed (AttachmentDescription* pAttachmentDescs = attachmentDescs)
             {
@@ -128,6 +124,32 @@ namespace Ryujinx.Graphics.Vulkan
             }
         }
 
+        public static SubpassDependency CreateSubpassDependency()
+        {
+            return new SubpassDependency(
+                0,
+                0,
+                PipelineStageFlags.AllGraphicsBit,
+                PipelineStageFlags.AllGraphicsBit,
+                SubpassSrcAccessMask,
+                SubpassDstAccessMask,
+                0);
+        }
+
+        public unsafe static SubpassDependency2 CreateSubpassDependency2()
+        {
+            return new SubpassDependency2(
+                StructureType.SubpassDependency2,
+                null,
+                0,
+                0,
+                PipelineStageFlags.AllGraphicsBit,
+                PipelineStageFlags.AllGraphicsBit,
+                SubpassSrcAccessMask,
+                SubpassDstAccessMask,
+                0);
+        }
+
         public static PipelineState ToVulkanPipelineState(this ProgramPipelineState state, VulkanRenderer gd)
         {
             PipelineState pipeline = new PipelineState();
@@ -135,7 +157,7 @@ namespace Ryujinx.Graphics.Vulkan
 
             // It is assumed that Dynamic State is enabled when this conversion is used.
 
-            pipeline.CullMode = state.CullEnable ? state.CullMode.Convert() : CullModeFlags.CullModeNone;
+            pipeline.CullMode = state.CullEnable ? state.CullMode.Convert() : CullModeFlags.None;
 
             pipeline.DepthBoundsTestEnable = false; // Not implemented.
 

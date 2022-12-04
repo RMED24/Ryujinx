@@ -338,6 +338,11 @@ namespace Ryujinx.Graphics.GAL.Multithreading
             return box.Result;
         }
 
+        public ulong GetCurrentSync()
+        {
+            return _baseRenderer.GetCurrentSync();
+        }
+
         public HardwareInfo GetHardwareInfo()
         {
             return _baseRenderer.GetHardwareInfo();
@@ -422,7 +427,11 @@ namespace Ryujinx.Graphics.GAL.Multithreading
 
             // Stop the GPU thread.
             _disposed = true;
-            _gpuThread.Join();
+
+            if (_gpuThread != null && _gpuThread.IsAlive)
+            {
+                _gpuThread.Join();
+            }
 
             // Dispose the renderer.
             _baseRenderer.Dispose();

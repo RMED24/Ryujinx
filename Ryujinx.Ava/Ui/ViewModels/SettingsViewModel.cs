@@ -21,14 +21,10 @@ using Ryujinx.HLE.HOS.Services.Time.TimeZone;
 using Ryujinx.Input;
 using Ryujinx.Ui.Common.Configuration;
 using Ryujinx.Ui.Common.Configuration.System;
-using Silk.NET.Vulkan;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Diagnostics;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using TimeZone = Ryujinx.Ava.Ui.Models.TimeZone;
 
 namespace Ryujinx.Ava.Ui.ViewModels
@@ -122,7 +118,12 @@ namespace Ryujinx.Ava.Ui.ViewModels
                 OnPropertyChanged();
             }
         }
-
+        
+        public bool IsMacOS
+        {
+            get => OperatingSystem.IsMacOS();
+        }
+        
         public bool EnableDiscordIntegration { get; set; }
         public bool CheckUpdatesOnStart { get; set; }
         public bool ShowConfirmExit { get; set; }
@@ -138,6 +139,7 @@ namespace Ryujinx.Ava.Ui.ViewModels
         public bool ExpandDramSize { get; set; }
         public bool EnableShaderCache { get; set; }
         public bool EnableTextureRecompression { get; set; }
+        public bool EnableMacroHLE { get; set; }
         public bool EnableFileLog { get; set; }
         public bool EnableStub { get; set; }
         public bool EnableInfo { get; set; }
@@ -339,6 +341,7 @@ namespace Ryujinx.Ava.Ui.ViewModels
             ExpandDramSize = config.System.ExpandRam;
             EnableShaderCache = config.Graphics.EnableShaderCache;
             EnableTextureRecompression = config.Graphics.EnableTextureRecompression;
+            EnableMacroHLE = config.Graphics.EnableMacroHLE;
             EnableFileLog = config.Logger.EnableFileLog;
             EnableStub = config.Logger.EnableStub;
             EnableInfo = config.Logger.EnableInfo;
@@ -422,6 +425,7 @@ namespace Ryujinx.Ava.Ui.ViewModels
             config.Graphics.EnableVsync.Value = EnableVsync;
             config.Graphics.EnableShaderCache.Value = EnableShaderCache;
             config.Graphics.EnableTextureRecompression.Value = EnableTextureRecompression;
+            config.Graphics.EnableMacroHLE.Value = EnableMacroHLE;
             config.Graphics.GraphicsBackend.Value = (GraphicsBackend)GraphicsBackendIndex;
             config.System.EnablePtc.Value = EnablePptc;
             config.System.EnableInternetAccess.Value = EnableInternetAccess;
@@ -475,11 +479,40 @@ namespace Ryujinx.Ava.Ui.ViewModels
             MainWindow.UpdateGraphicsConfig();
 
             _previousVolumeLevel = Volume;
+
+            if (_owner is SettingsWindow owner)
+            {
+                owner.ControllerSettings?.SaveCurrentProfile();
+            }
+            
+            if (_owner.Owner is MainWindow window && _directoryChanged)
+            {
+                window.ViewModel.LoadApplications();
+            }
+
+            _directoryChanged = false;
         }
 
         public void RevertIfNotSaved()
         {
             Program.ReloadConfig();
+        }
+
+        public void ApplyButton()
+        {
+            SaveSettings();
+        }
+
+        public void OkButton()
+        {
+            SaveSettings();
+            _owner.Close();
+        }
+
+        public void CancelButton()
+        {
+            RevertIfNotSaved();
+            _owner.Close();
         }
     }
 }
